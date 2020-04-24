@@ -168,15 +168,17 @@ class MPCPeer:
 		global_start = time.time()
 		print('starting triples loop')
 		self.triples = []
-		self.active_ops['TRIPLES'] = {}
+		k = 0
+		self.active_ops[f'TRIPLES-{k}'] = {i+1: {} for i in range(2)}
 		while len(self.peers) == self.n-1:
-			self.active_ops['TRIPLES'] = {i+1: {} for i in range(2)}
-			self.triple_id = {}
 			start = time.time()
-			triples = await asyncio.wait_for(self.generate_triples(10000), timeout=30)
+			triples = await asyncio.wait_for(self.generate_triples(f'TRIPLES-{k}', 10000), timeout=30)
 			self.triples.extend(triples)
 			print(f"triples: {len(self.triples)}, time: {round(time.time()-start, 4)}")
-			if len(self.triples) == 100000:
+			if len(self.triples) == 1000000:
+				del self.active_ops[f'TRIPLES-{k}']
+				k += 1
+				self.active_ops[f'TRIPLES-{k}'] = {i+1: {} for i in range(2)}
 				my_id = ''.join([random.choice('abcdef0123456789') for _ in range(10)])
 				self.triple_id[self.index] = my_id
 				for i in range(1, self.n+1):
@@ -191,7 +193,7 @@ class MPCPeer:
 				msg = {'share': base64.b64encode(encrypted_shares).decode(), 'triple_id': id_[:10], 'node_id': self.index, 'api_key': self.api_key}
 				print("share length:", len(msg['share']))
 				if self.api_endpoint != None:
-					r = await post_request(self.api_endpoint, msg)
+					r = await post_request(self.api_endpoint, msg, self.api_key)
 					print("triples posted:", r)
 				else:
 					print("no api address set - not posting")
@@ -209,18 +211,18 @@ class MPCPeer:
 		ssl_ctx.set_ciphers('ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384')
 		await asyncio.wait_for(self.loop.create_connection(lambda: MPCProtocol(self, client=True), host, port, ssl=ssl_ctx), timeout=5)
 
-	async def generate_triples(self, batch_size):
+	async def generate_triples(self, id_, batch_size):
 		msgs = self.shamir.generate_triples_round_1(batch_size)
 		for i in range(1, self.n+1):
 			if i != self.index:
-				self.peers[i].send_mpc_msg(serialize_triple_ab_msg(msgs[i-1]), "TRIP-AB", "TRIPLES", 1)
-		resps = await self.gather_mpc_msgs("TRIPLES", 1, self.n-1)
+				self.peers[i].send_mpc_msg(serialize_triple_ab_msg(msgs[i-1]), "TRIP-AB", id_, 1)
+		resps = await self.gather_mpc_msgs(id_, 1, self.n-1)
 		resps.append(msgs[self.index-1])
 		a_shares, b_shares, msgs = self.shamir.generate_triples_round_2(resps)
 		for i in range(1, self.n+1):
 			if i != self.index:
-				self.peers[i].send_mpc_msg(serialize_triple_c_msg(msgs[i-1]), "TRIP-C", "TRIPLES", 2)
-		resps = await self.gather_mpc_msgs("TRIPLES", 2, self.n-1)		
+				self.peers[i].send_mpc_msg(serialize_triple_c_msg(msgs[i-1]), "TRIP-C", id_, 2)
+		resps = await self.gather_mpc_msgs(id_, 2, self.n-1)		
 		resps.append(msgs[self.index-1])
 		return self.shamir.generate_triples_round_3(a_shares, b_shares, resps)
 
