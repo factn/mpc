@@ -12,12 +12,12 @@ if __name__ == '__main__':
 	else:
 		key = generate_key().to_hex()
 	if len(args) > 6:
-		endpoint = args[6]
+		api_endpoint = args[6]
 	else:
-		endpoint = None
+		api_endpoint = None
 	if len(args) > 7:
 		api_key = args[7]
 	else:
 		api_key = None
-	peer = MPCPeer(int(args[0]), int(args[1]), int(args[2]), int(args[3]), key, bootstrap, 'TRIPLE', api_endpoint=endpoint, api_key=api_key)
+	peer = MPCPeer(int(args[0]), int(args[1]), int(args[2]), int(args[3]), key, bootstrap, 'TRIPLE', api_endpoint=api_endpoint, api_key=api_key)
 	peer.start()

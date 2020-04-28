@@ -10,7 +10,8 @@ Welcome to Faction's open source Secure Multi Party Computation toolkit. We're b
 
 - python 3.7+
 - gf256 module (`pip3 install gf256`)
-- optionally: aiohttp module (`pip3 install aiohttp, cchardet, aiodns`) (if your custom MPC protocol is communicating with any outside apis)
+- asyncio and related modules (`pip3 install asyncio aiohttp cchardet aiodns`)
+- ecies module (`pip3 install eciespy`)
 
 ## Clone and test
 

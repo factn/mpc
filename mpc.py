@@ -46,6 +46,10 @@ class MPCProtocol(asyncio.Protocol):
 			print(f"Peer {self.mpc.index} disconnected from peer {self.peer_index} -- ({len(self.mpc.peers)} total peers)")
 
 	def handle_mpc_msg(self, msg):
+		if msg['pid'] not in self.mpc.active_ops:
+			if self.mpc.protocol_type == "TRIPLE":
+				print("Yup... got here!")
+				self.mpc.active_ops[msg['pid']] = {i+1: {} for i in range(2)}
 		op_round = self.mpc.active_ops[msg['pid']][msg['round']]
 		if self.peer_index not in op_round.keys():
 			if msg['datatype'] == "TRIP-AB":
@@ -88,7 +92,11 @@ class MPCProtocol(asyncio.Protocol):
 					pass
 				self.mpc.triple_task = self.mpc.loop.create_task(self.mpc.triples_loop())
 			if self.mpc.protocol_type == 'MPC':
-				self.mpc.loop.create_task(self.mpc.main_loop())
+				try:
+					self.mpc.main_task.cancel()
+				except:
+					pass
+				self.mpc.main_task = self.mpc.loop.create_task(self.mpc.main_loop())
 
 	def handle_triple_id_msg(self, msg):
 		if self.peer_index not in self.mpc.triple_id.keys():
@@ -129,7 +137,9 @@ class MPCPeer:
 		self.active_ops = {}
 		self.triples = []
 		self.triple_id = {}
+		self.triple_round = 0
 		self.triple_task = None
+		self.main_task = None
 
 	def start(self):
 		self.loop.run_until_complete(self.bootstrap_and_start())
@@ -150,55 +160,100 @@ class MPCPeer:
 		ssl_ctx.check_hostname = False
 		ssl_ctx.verify_mode = ssl.VerifyMode.CERT_REQUIRED
 		ssl_ctx.set_ciphers('ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384')
-		server = await self.loop.create_server(lambda: MPCProtocol(self), '127.0.0.1', self.port, ssl=ssl_ctx, start_serving=False)
-		print(f'Peer {self.index} starting at 127.0.0.1:{self.port}')
+		server = await self.loop.create_server(lambda: MPCProtocol(self), '0.0.0.0', self.port, ssl=ssl_ctx, start_serving=False)
+		print(f'Peer {self.index} starting at 0.0.0.0:{self.port}')
 		for host, port, index in self.bootstrap:
 			try:
 				await self.connect_to_mpc_peer(host, port, index)
-			except:
-				pass
+			except Exception as e:
+				print(f"Failed to connect: {e}")
 		async with server:
 			await server.serve_forever()
 
 	async def main_loop(self):
-		pass
-		# TODO
+		print('starting main loop...')
+		self.triple_id = {}
+		go = True
+		while len(self.peers) == self.n-1:
+			if int(time.time())%60 < 5 and go:
+				print("get triples...")
+				r = await get_request(self.api_endpoint+"/all", None, self.api_key)
+				msg = json.loads(r)
+				all_triples = msg["triples"]
+				node_triples = [[] for _ in range(self.n)]
+				for nidx in range(1, self.n+1):
+					for triple in all_triples:
+						if triple["node_id"] == nidx:
+							node_triples[nidx-1].append(triple["triple_id"])
+				for i in range(len(node_triples)):
+					node_triples[i] = list(sorted(node_triples[i]))
+				get_triple = None
+				for triple in node_triples[0]:
+					if all([triple in n for n in node_triples]):
+						get_triple = triple
+						break
+				print(f'next triple: {get_triple}')
+				r = await get_request(self.api_endpoint, {'triple_id': get_triple, 'node_id':self.index}, self.api_key)
+				encrypted_shares = base64.b64decode(json.loads(r)['share'])
+				triples = decrypt(self.private_key, encrypted_shares)
+				print("triple:", triples[0])
+				go = False
+			elif int(time.time())%60 < 5:
+				pass
+			else:
+				go = True
 
 	async def triples_loop(self):
 		global_start = time.time()
 		print('starting triples loop')
 		self.triples = []
-		k = 0
-		self.active_ops[f'TRIPLES-{k}'] = {i+1: {} for i in range(2)}
+		self.triple_round = 0
+		self.active_ops[f'TRIPLES-{self.triple_round}'] = {i+1: {} for i in range(2)}
 		while len(self.peers) == self.n-1:
-			start = time.time()
-			triples = await asyncio.wait_for(self.generate_triples(f'TRIPLES-{k}', 10000), timeout=30)
-			self.triples.extend(triples)
-			print(f"triples: {len(self.triples)}, time: {round(time.time()-start, 4)}")
-			if len(self.triples) == 1000000:
-				del self.active_ops[f'TRIPLES-{k}']
-				k += 1
-				self.active_ops[f'TRIPLES-{k}'] = {i+1: {} for i in range(2)}
-				my_id = ''.join([random.choice('abcdef0123456789') for _ in range(10)])
-				self.triple_id[self.index] = my_id
-				for i in range(1, self.n+1):
-					if i != self.index:
-						self.peers[i].send_triple_id_msg(my_id)
-				id_ = await self.gather_triple_id()
-				print(f"triples id: {id_} time: {round(time.time()-global_start, 4)}")
-				data = serialize_triples(self.triples)
-				self.triples = []
-				shrs = json.dumps({'data': data})
-				encrypted_shares = encrypt(self.public_key, shrs.encode())
-				msg = {'share': base64.b64encode(encrypted_shares).decode(), 'triple_id': id_[:10], 'node_id': self.index, 'api_key': self.api_key}
-				print("share length:", len(msg['share']))
-				if self.api_endpoint != None:
-					r = await post_request(self.api_endpoint, msg, self.api_key)
-					print("triples posted:", r)
+			try:
+				start = time.time()
+				print(f"begin triples operation {self.triple_round}...")
+				triples = await asyncio.wait_for(self.generate_triples(f'TRIPLES-{self.triple_round}', 10000), timeout=60)
+				self.triples.extend(triples)
+				print(f"finished round {self.triple_round}")
+				print(f"triples: {len(self.triples)}, time: {round(time.time()-start, 4)}")
+				del self.active_ops[f'TRIPLES-{self.triple_round}']
+				if len(self.triples) < 100000:
+					self.triple_round += 1
+					if f'TRIPLES-{self.triple_round}' not in self.active_ops:
+						self.active_ops[f'TRIPLES-{self.triple_round}'] = {i+1: {} for i in range(2)}
 				else:
-					print("no api address set - not posting")
-				global_start = time.time()
+					self.triple_round = 0
+					if f'TRIPLES-{self.triple_round}' not in self.active_ops:
+						self.active_ops[f'TRIPLES-{self.triple_round}'] = {i+1: {} for i in range(2)}
+					my_id = ''.join([random.choice('abcdef0123456789') for _ in range(10)])
+					self.triple_id[self.index] = my_id
+					for i in range(1, self.n+1):
+						if i != self.index:
+							self.peers[i].send_triple_id_msg(my_id)
+					id_ = await self.gather_triple_id()
+					self.triple_id = {}
+					print(f"triples id: {id_[:10]} time: {round(time.time()-global_start, 4)}")
+					data = serialize_triples(self.triples)
+					self.triples = []
+					shrs = json.dumps({'data': data})
+					encrypted_shares = encrypt(self.public_key, shrs.encode())
+					msg = {'share': base64.b64encode(encrypted_shares).decode(), 'triple_id': id_[:10], 'node_id': self.index, 'api_key': self.api_key}
+					print("share length:", len(msg['share']))
+					if self.api_endpoint != None:
+						r = await post_request(self.api_endpoint, msg, self.api_key)
+						print("triples posted:", r)
+					else:
+						print("no api address set - not posting")
+					global_start = time.time()
+			except Exception as e:
+				print(f"Triples loop failed: {e}")
+				break
 		print('ending triples loop')
+		for task in asyncio.Task.all_tasks():
+			task.cancel()
+		self.loop.close()
+		self.loop.stop()
 
 	async def connect_to_mpc_peer(self, host, port, index):
 		ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -250,7 +305,7 @@ async def post_request(url, data, api_key):
 
 async def get_request(url, data, api_key):
 	async with aiohttp.ClientSession() as session:
-		async with session.get(url, params=data, headers={'api_key': api_key}) as resp:
+		async with session.get(url, json=data, headers={'api_key': api_key, 'content-type':'application/json'}) as resp:
 			return await resp.text()
 
 '''
