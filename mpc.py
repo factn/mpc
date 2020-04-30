@@ -48,8 +48,9 @@ class MPCProtocol(asyncio.Protocol):
 	def handle_mpc_msg(self, msg):
 		if msg['pid'] not in self.mpc.active_ops:
 			if self.mpc.protocol_type == "TRIPLE":
-				print("Yup... got here!")
 				self.mpc.active_ops[msg['pid']] = {i+1: {} for i in range(2)}
+			if self.mpc.protocol_type == "MPC":
+				self.mpc.active_ops[msg['pid']] = {i+1: {} for i in range(len(self.mpc.default_circuit.circuit_layers))}
 		op_round = self.mpc.active_ops[msg['pid']][msg['round']]
 		if self.peer_index not in op_round.keys():
 			if msg['datatype'] == "TRIP-AB":
@@ -71,7 +72,7 @@ class MPCProtocol(asyncio.Protocol):
 		try:
 			found = False
 			for host, port, index in self.mpc.bootstrap:
-				if (host == peername[0]) and (msg['port'] == port) and (msg['index'] == index) and (msg['ptype'] == self.mpc.protocol_type):
+				if (host == peername[0]) and (msg['port'] == port) and (msg['index'] == index) and (msg['ptype'] == self.mpc.protocol_type) and (index not in self.mpc.peers):
 					self.mpc.peers[index] = self
 					self.peer_index = index
 					print(f"Peer {self.mpc.index} added peer {self.peer_index} -- ({len(self.mpc.peers)} total peers)")
@@ -97,6 +98,14 @@ class MPCProtocol(asyncio.Protocol):
 				except:
 					pass
 				self.mpc.main_task = self.mpc.loop.create_task(self.mpc.main_loop())
+		else:
+			# Try to connect again...
+			for host, port, index in self.mpc.bootstrap:
+				if index not in self.mpc.peers:
+					try:
+						self.mpc.loop.create_task(self.mpc.connect_to_mpc_peer(host, port, index))
+					except Exception as e:
+						print(f"Failed to connect: {e}")
 
 	def handle_triple_id_msg(self, msg):
 		if self.peer_index not in self.mpc.triple_id.keys():
@@ -131,6 +140,7 @@ class MPCPeer:
 		self.api_endpoint = api_endpoint
 		self.api_key = api_key
 		self.loop = asyncio.get_event_loop()
+		self.default_circuit = Circuit(os.path.join(self.circuit_dir, "unnormalized_subregion_1_9.txt"), ['V' for _ in range(64)]+['S' for _ in range(22)])
 		self.shamir = Shamir(self.t, self.n)
 		self.public_key = binascii.hexlify(hex2prv(self.private_key).public_key.format(True)).decode()
 		self.peers = {}
@@ -172,12 +182,11 @@ class MPCPeer:
 
 	async def main_loop(self):
 		print('starting main loop...')
-		self.triple_id = {}
-		go = True
+		wait = False
 		while len(self.peers) == self.n-1:
-			if int(time.time())%60 < 5 and go:
+			if int(time.time())%120 < 10 and not wait:
 				print("get triples...")
-				r = await get_request(self.api_endpoint+"/all", None, self.api_key)
+				r = await get_request(os.path.join(self.api_endpoint, "triples/all"), None, self.api_key)
 				msg = json.loads(r)
 				all_triples = msg["triples"]
 				node_triples = [[] for _ in range(self.n)]
@@ -193,15 +202,40 @@ class MPCPeer:
 						get_triple = triple
 						break
 				print(f'next triple: {get_triple}')
-				r = await get_request(self.api_endpoint, {'triple_id': get_triple, 'node_id':self.index}, self.api_key)
-				encrypted_shares = base64.b64decode(json.loads(r)['share'])
-				triples = decrypt(self.private_key, encrypted_shares)
-				print("triple:", triples[0])
-				go = False
-			elif int(time.time())%60 < 5:
+				r_trip = await get_request(os.path.join(self.api_endpoint, "triples"), {'triple_id': get_triple, 'node_id':self.index}, self.api_key)
+				encrypted_shares = base64.b64decode(json.loads(r_trip)['share'])
+				triples_json = decrypt(self.private_key, encrypted_shares)
+				triples = deserialize_triples(json.loads(triples_json.decode())['data'])
+				r_shr = await get_request(os.path.join(self.api_endpoint, "shares"), {"node_id": self.index}, self.api_key)
+				jr = json.loads(r_shr)
+				id_ = jr["computation_id"]
+				shrs = jr['shares']
+				print("id: ", id_)
+				inputs = [0 for _ in range(64)]
+				for s in shrs:
+					enc_share = base64.b64decode(s["share"])
+					try:
+						share_json = decrypt(self.private_key, enc_share)
+					except Exception as e:
+						print(f"error: {e}")
+					bshares = json.loads(share_json.decode())["data"]
+					shares = deserialize_shares(bshares)
+					inputs.extend(shares)
+				print("running circuit...")
+				res = await asyncio.wait_for(self.run_circuit(id_, self.default_circuit, inputs, triples), timeout=120)
+				print("result: ", res)
+				# TO DO POST RESULTS
+				wait = True
+			elif int(time.time())%120 < 10 and wait:
 				pass
 			else:
-				go = True
+				wait = False
+			await asyncio.sleep(5)
+		print("ending main loop...")
+		for task in asyncio.Task.all_tasks():
+			task.cancel()
+		self.loop.close()
+		self.loop.stop()
 
 	async def triples_loop(self):
 		global_start = time.time()
@@ -213,7 +247,7 @@ class MPCPeer:
 			try:
 				start = time.time()
 				print(f"begin triples operation {self.triple_round}...")
-				triples = await asyncio.wait_for(self.generate_triples(f'TRIPLES-{self.triple_round}', 10000), timeout=60)
+				triples = await asyncio.wait_for(self.generate_triples(f'TRIPLES-{self.triple_round}', 10000), timeout=120)
 				self.triples.extend(triples)
 				print(f"finished round {self.triple_round}")
 				print(f"triples: {len(self.triples)}, time: {round(time.time()-start, 4)}")
@@ -241,7 +275,7 @@ class MPCPeer:
 					msg = {'share': base64.b64encode(encrypted_shares).decode(), 'triple_id': id_[:10], 'node_id': self.index, 'api_key': self.api_key}
 					print("share length:", len(msg['share']))
 					if self.api_endpoint != None:
-						r = await post_request(self.api_endpoint, msg, self.api_key)
+						r = await post_request(os.path.join(self.api_endpoint, "triples"), msg, self.api_key)
 						print("triples posted:", r)
 					else:
 						print("no api address set - not posting")
@@ -280,6 +314,20 @@ class MPCPeer:
 		resps = await self.gather_mpc_msgs(id_, 2, self.n-1)		
 		resps.append(msgs[self.index-1])
 		return self.shamir.generate_triples_round_3(a_shares, b_shares, resps)
+
+	async def run_circuit(self, id_, circuit, inputs, triples):
+		self.active_ops[id_] = {i+1: {} for i in range(len(circuit.circuit_layers))}
+		runtime = RuntimeCircuit(circuit, inputs, triples=triples, shamir=self.shamir)
+		for i in range(len(runtime.circuit_layers)):
+			idxs, x, y, send_shares, cs = runtime.compute_layer(i)
+			msg = serialize_mul_msg(send_shares)
+			for j in range(1, self.n+1):
+				if j != self.index:
+					self.peers[j].send_mpc_msg(msg, "MUL", id_, i+1)
+			resps = await self.gather_mpc_msgs(id_, i+1, self.t)
+			resps.append(send_shares)
+			runtime.finish_layer(idxs, x, y, resps, cs)
+		return runtime.get_outputs()
 
 	async def gather_mpc_msgs(self, pid, round_n, target_n):
 		while len(self.active_ops[pid][round_n]) < target_n:

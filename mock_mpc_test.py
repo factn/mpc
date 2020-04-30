@@ -129,16 +129,16 @@ def test_lessthan32_circuit(t, n, triples):
         inputs = Shamir(t, n).share_bitstring_secret(x_bin[::-1]+y_bin[::-1])
         test_mpc(t, n, c_path, triples, inputs, result)
 
-def test_unnormalized_subregion_10k(t, n, triples):
-    c_path = "bristol_circuits/unnormalized_subregion_10000_1.txt"
-    ones = ['1' for _ in range(30000)]
+def test_unnormalized_subregion_100(t, n, triples):
+    c_path = "bristol_circuits/unnormalized_subregion_100_9.txt"
+    ones = ['1' for _ in range(1100)]
     inputs = Shamir(t, n).share_bitstring_secret(ones)
     for i in range(len(inputs)):
         inputs[i] = [0 for _ in range(64)]+inputs[i]
-    result = bin(30000)[2:]
+    result = bin(300)[2:]
     while len(result)<64:
         result = '0'+result
-    result = result
+    result = result*9
     test_mpc(t, n, c_path, triples, inputs, result)
 
 if __name__ == "__main__":
@@ -163,6 +163,6 @@ if __name__ == "__main__":
     print("--BEGIN LONG TEST--")
     print("initializing triples...")
     start = time.time()
-    triples = gen_triples(1, 3, 1000000)
+    triples = gen_triples(1, 3, 100000)
     print(f"time: {round(time.time()-start, 4)}")
-    test_unnormalized_subregion_10k(t, n, triples)
+    test_unnormalized_subregion_100(t, n, triples)

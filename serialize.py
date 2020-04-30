@@ -12,7 +12,7 @@ def serialize_triples(triples):
 	return [triples[0].a.x, [[int(t.a.y), int(t.b.y), int(t.c.y)] for t in triples]]
 
 def deserialize_triples(flat_triples):
-	if len(triple_dict) == 0:
+	if len(flat_triples) == 0:
 		return []
 	x = flat_triples[0]
 	return [TripleShare(Share(x, t[0]), Share(x, t[1]), Share(x, t[2])) for t in flat_triples[1]]
