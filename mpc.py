@@ -72,11 +72,11 @@ class MPCProtocol(asyncio.Protocol):
 		try:
 			found = False
 			for host, port, index in self.mpc.bootstrap:
-				if (host == peername[0]) and (msg['port'] == port) and (msg['index'] == index) and (msg['ptype'] == self.mpc.protocol_type) and (index not in self.mpc.peers):
+				if (host == peername[0]) and (msg['port'] == port) and (msg['index'] == index) and (msg['ptype'] == self.mpc.protocol_type):
 					self.mpc.peers[index] = self
-					self.peer_index = index
 					print(f"Peer {self.mpc.index} added peer {self.peer_index} -- ({len(self.mpc.peers)} total peers)")
 					found = True
+					self.peer_index = index
 			if not found:
 				raise ValueError("not in bootstrap list")
 		except Exception as e:
@@ -98,14 +98,6 @@ class MPCProtocol(asyncio.Protocol):
 				except:
 					pass
 				self.mpc.main_task = self.mpc.loop.create_task(self.mpc.main_loop())
-		else:
-			# Try to connect again...
-			for host, port, index in self.mpc.bootstrap:
-				if index not in self.mpc.peers:
-					try:
-						self.mpc.loop.create_task(self.mpc.connect_to_mpc_peer(host, port, index))
-					except Exception as e:
-						print(f"Failed to connect: {e}")
 
 	def handle_triple_id_msg(self, msg):
 		if self.peer_index not in self.mpc.triple_id.keys():
@@ -140,7 +132,7 @@ class MPCPeer:
 		self.api_endpoint = api_endpoint
 		self.api_key = api_key
 		self.loop = asyncio.get_event_loop()
-		self.default_circuit = Circuit(os.path.join(self.circuit_dir, "unnormalized_subregion_1_9.txt"), ['V' for _ in range(64)]+['S' for _ in range(22)])
+		self.default_circuit = Circuit(os.path.join(self.circuit_dir, "unnormalized_subregion_2_9.txt"), ['V' for _ in range(64)]+['S' for _ in range(22)])
 		self.shamir = Shamir(self.t, self.n)
 		self.public_key = binascii.hexlify(hex2prv(self.private_key).public_key.format(True)).decode()
 		self.peers = {}
@@ -153,11 +145,7 @@ class MPCPeer:
 
 	def start(self):
 		self.loop.run_until_complete(self.bootstrap_and_start())
-		try:
-			self.loop.run_forever()
-		except KeyboardInterrupt:
-			pass
-		self.loop.close()
+		self.loop.run_forever()
 
 	async def bootstrap_and_start(self):
 		ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -184,57 +172,68 @@ class MPCPeer:
 		print('starting main loop...')
 		wait = False
 		while len(self.peers) == self.n-1:
-			if int(time.time())%120 < 10 and not wait:
-				print("get triples...")
-				r = await get_request(os.path.join(self.api_endpoint, "triples/all"), None, self.api_key)
-				msg = json.loads(r)
-				all_triples = msg["triples"]
-				node_triples = [[] for _ in range(self.n)]
-				for nidx in range(1, self.n+1):
-					for triple in all_triples:
-						if triple["node_id"] == nidx:
-							node_triples[nidx-1].append(triple["triple_id"])
-				for i in range(len(node_triples)):
-					node_triples[i] = list(sorted(node_triples[i]))
-				get_triple = None
-				for triple in node_triples[0]:
-					if all([triple in n for n in node_triples]):
-						get_triple = triple
-						break
-				print(f'next triple: {get_triple}')
-				r_trip = await get_request(os.path.join(self.api_endpoint, "triples"), {'triple_id': get_triple, 'node_id':self.index}, self.api_key)
-				encrypted_shares = base64.b64decode(json.loads(r_trip)['share'])
-				triples_json = decrypt(self.private_key, encrypted_shares)
-				triples = deserialize_triples(json.loads(triples_json.decode())['data'])
+			if int(time.time())%60 < 10 and not wait:
 				r_shr = await get_request(os.path.join(self.api_endpoint, "shares"), {"node_id": self.index}, self.api_key)
 				jr = json.loads(r_shr)
 				id_ = jr["computation_id"]
 				shrs = jr['shares']
-				print("id: ", id_)
-				inputs = [0 for _ in range(64)]
-				for s in shrs:
-					enc_share = base64.b64decode(s["share"])
+				if len(shrs) == 2:
+					print("get triples...")
+					r = await get_request(os.path.join(self.api_endpoint, "triples/all"), None, self.api_key)
+					msg = json.loads(r)
+					all_triples = msg["triples"]
+					node_triples = [[] for _ in range(self.n)]
+					get_triple = None
+					for nidx in range(1, self.n+1):
+						for triple in all_triples:
+							if triple["node_id"] == nidx:
+								node_triples[nidx-1].append(triple["triple_id"])
+					for i in range(len(node_triples)):
+						node_triples[i] = list(sorted(node_triples[i]))
+					for triple in node_triples[0]:
+						if all([triple in n for n in node_triples]):
+							get_triple = triple
+							break
+					print(f'next triple: {get_triple}')
+					r_trip = await get_request(os.path.join(self.api_endpoint, "triples"), {'triple_id': get_triple, 'node_id':self.index}, self.api_key)
+					encrypted_shares = base64.b64decode(json.loads(r_trip)['share'])
+					triples_json = decrypt(self.private_key, encrypted_shares)
+					triples = deserialize_triples(json.loads(triples_json.decode())['data'])
+					print("id: ", id_)
+					inputs = [0 for _ in range(64)]
+					for s in shrs:
+						enc_share = base64.b64decode(s["share"])
+						try:
+							share_json = decrypt(self.private_key, enc_share)
+						except Exception as e:
+							print(f"error decrypting: {e}")
+							continue
+						bshares = json.loads(share_json.decode())
+						shares = deserialize_shares(bshares)
+						inputs.extend(shares)
+					print("running circuit...")
 					try:
-						share_json = decrypt(self.private_key, enc_share)
+						res_shares = await asyncio.wait_for(self.run_circuit(id_, self.default_circuit, inputs, triples), timeout=90)
 					except Exception as e:
-						print(f"error: {e}")
-					bshares = json.loads(share_json.decode())["data"]
-					shares = deserialize_shares(bshares)
-					inputs.extend(shares)
-				print("running circuit...")
-				res = await asyncio.wait_for(self.run_circuit(id_, self.default_circuit, inputs, triples), timeout=120)
-				print("result: ", res)
-				# TO DO POST RESULTS
-				wait = True
-			elif int(time.time())%120 < 10 and wait:
+						print(f"Failed to run circuit: {e}")
+						wait = True
+						continue
+					shares = []
+					for i in range(9):
+						bshr = serialize_shares(res_shares[i*64:(i+1)*64])
+						b = json.dumps(bshr)
+						shares.append({'area_id':i+1, 'share':b})
+					msg = {'shares': shares, 'computation_id':id_, 'node_id':self.index}
+					r = await post_request(os.path.join(self.api_endpoint, "results"), msg, self.api_key)
+					print(f"resp: {r}")
+					wait = True
+			elif int(time.time())%60 < 10 and wait:
 				pass
 			else:
 				wait = False
-			await asyncio.sleep(5)
 		print("ending main loop...")
 		for task in asyncio.Task.all_tasks():
 			task.cancel()
-		self.loop.close()
 		self.loop.stop()
 
 	async def triples_loop(self):
@@ -286,19 +285,21 @@ class MPCPeer:
 		print('ending triples loop')
 		for task in asyncio.Task.all_tasks():
 			task.cancel()
-		self.loop.close()
 		self.loop.stop()
 
 	async def connect_to_mpc_peer(self, host, port, index):
-		ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-		ssl_ctx.options |= ssl.OP_NO_TLSv1
-		ssl_ctx.options |= ssl.OP_NO_TLSv1_1
-		ssl_ctx.load_cert_chain(self.certfile, keyfile=self.keyfile)
-		ssl_ctx.load_verify_locations(cafile=self.cafile)
-		ssl_ctx.check_hostname = False
-		ssl_ctx.verify_mode = ssl.VerifyMode.CERT_REQUIRED
-		ssl_ctx.set_ciphers('ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384')
-		await asyncio.wait_for(self.loop.create_connection(lambda: MPCProtocol(self, client=True), host, port, ssl=ssl_ctx), timeout=5)
+		try:
+			ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+			ssl_ctx.options |= ssl.OP_NO_TLSv1
+			ssl_ctx.options |= ssl.OP_NO_TLSv1_1
+			ssl_ctx.load_cert_chain(self.certfile, keyfile=self.keyfile)
+			ssl_ctx.load_verify_locations(cafile=self.cafile)
+			ssl_ctx.check_hostname = False
+			ssl_ctx.verify_mode = ssl.VerifyMode.CERT_REQUIRED
+			ssl_ctx.set_ciphers('ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384')
+			await asyncio.wait_for(self.loop.create_connection(lambda: MPCProtocol(self, client=True), host, port, ssl=ssl_ctx), timeout=5)
+		except Exception as e:
+			print(f"Failed to connect to {host}:{port} -- {e}")
 
 	async def generate_triples(self, id_, batch_size):
 		msgs = self.shamir.generate_triples_round_1(batch_size)
@@ -319,14 +320,17 @@ class MPCPeer:
 		self.active_ops[id_] = {i+1: {} for i in range(len(circuit.circuit_layers))}
 		runtime = RuntimeCircuit(circuit, inputs, triples=triples, shamir=self.shamir)
 		for i in range(len(runtime.circuit_layers)):
+			print("starting layer ", i+1)
 			idxs, x, y, send_shares, cs = runtime.compute_layer(i)
-			msg = serialize_mul_msg(send_shares)
-			for j in range(1, self.n+1):
-				if j != self.index:
-					self.peers[j].send_mpc_msg(msg, "MUL", id_, i+1)
-			resps = await self.gather_mpc_msgs(id_, i+1, self.t)
-			resps.append(send_shares)
-			runtime.finish_layer(idxs, x, y, resps, cs)
+			if len(idxs) > 0:
+				msg = serialize_mul_msg(send_shares)
+				for j in range(1, self.n+1):
+					if j != self.index:
+						self.peers[j].send_mpc_msg(msg, "MUL", id_, i+1)
+				#print("gathering layer ", i+1)
+				resps = await self.gather_mpc_msgs(id_, i+1, self.t)
+				resps.append(send_shares)
+				runtime.finish_layer(idxs, x, y, resps, cs)
 		return runtime.get_outputs()
 
 	async def gather_mpc_msgs(self, pid, round_n, target_n):
@@ -355,60 +359,3 @@ async def get_request(url, data, api_key):
 	async with aiohttp.ClientSession() as session:
 		async with session.get(url, json=data, headers={'api_key': api_key, 'content-type':'application/json'}) as resp:
 			return await resp.text()
-
-'''
-	--KEEPING FOR REFERENCE--
-	async def execute_intersection_operation(self, msg, c_x, c_y, r, triples):
-		x_inputs = deserialize_shares(msg['x_inputs'])
-		y_inputs = deserialize_shares(msg['y_inputs'])
-		if len(x_inputs) != 31 or len(y_inputs) != 31:
-			return {'status': 'fail', 'reason':'inputs must be exactly 31 bits'}
-		x_inputs.append(0)
-		y_inputs.append(0)
-		rsq = round((r*100000))**2
-		c_x = round((c_x + 90)*100000)
-		c_y = round((c_y + 180)*100000)
-		cx_bits = [int(b) for b in bin(c_x)[2:]]
-		cy_bits = [int(b) for b in bin(c_y)[2:]]
-		rsq_bits = [int(b) for b in bin(rsq)[2:]]
-		all_constant_bits = []
-		for bits in (cx_bits, cy_bits, rsq_bits):
-			if len(bits) < 32:
-				cbs = [0 for _ in range(32-len(bits))]+ bits
-				all_constant_bits.extend(cbs[::-1])
-		inputs = [0 for _ in range(32)]+x_inputs+y_inputs+all_constant_bits
-		opid = msg['uuid']
-		self.active_ops[opid] = asyncio.Queue()
-		runtime = RuntimeCircuit(self.intersection_circuit, inputs, triples=triples, shamir=Shamir(self.t, self.n))
-		for i in range(len(runtime.circuit_layers)):
-			idxs, x, y, send_shares, cs = runtime.compute_layer(i)
-			bmsg = serialize_mul_msg(send_shares)
-			m = {'uuid': opid, 'round': i, 'data': bmsg}
-			tasks = []
-			for k in range(1, self.n+1):
-				if k != self.index:
-					tasks.append(self.send_mpc_msg(k, m))
-			while len(tasks) > 0:
-				new_tasks = []
-				for res in asyncio.as_completed(tasks):
-					idx, ok = await res
-					if not ok:
-						print(f'Circuit {opid} Index {self.index} layer {i+1}: FAILED TO SEND TO {idx}')
-						for host, port, nidx in self.bootstrap:
-							if nidx == idx:
-								self.loop.create_task(self.mpc_handshake(host, port, nidx))
-						new_tasks.append(self.send_mpc_msg(idx, m))
-				tasks = new_tasks
-			resps = []
-			while len(resps) < self.t+1:
-				r = await self.active_ops[opid].get()
-				if r['round'] == i:
-					resps.append(deserialize_mul_msg(r['data']))
-				elif r['round'] > i:
-					self.active_ops[opid].put_nowait(r)
-			resps.append(send_shares)
-			runtime.finish_layer(idxs, x, y, resps, cs)
-		out = runtime.get_outputs()
-		del self.active_ops[opid]
-		return {'uuid': opid, 'result': serialize_shares(out)}
-'''
