@@ -132,7 +132,7 @@ class MPCPeer:
 		self.api_endpoint = api_endpoint
 		self.api_key = api_key
 		self.loop = asyncio.get_event_loop()
-		self.default_circuit = Circuit(os.path.join(self.circuit_dir, "unnormalized_subregion_2_9.txt"), ['V' for _ in range(64)]+['S' for _ in range(22)])
+		self.default_circuit = Circuit(os.path.join(self.circuit_dir, "unnormalized_subregion_2_25.txt"), ['V' for _ in range(64)]+['S' for _ in range(54)])
 		self.shamir = Shamir(self.t, self.n)
 		self.public_key = binascii.hexlify(hex2prv(self.private_key).public_key.format(True)).decode()
 		self.peers = {}
@@ -219,7 +219,7 @@ class MPCPeer:
 						wait = True
 						continue
 					shares = []
-					for i in range(9):
+					for i in range(25):
 						bshr = serialize_shares(res_shares[i*64:(i+1)*64])
 						b = json.dumps(bshr)
 						shares.append({'area_id':i+1, 'share':b})

@@ -2,12 +2,12 @@ import requests, json, base64
 from ecies import encrypt
 from shamir import Shamir
 from serialize import serialize_shares
-import time
+import time, random
 
 if __name__ == '__main__':
 	while True:
 		for i in range(2):
-			vals = '1'*11
+			vals = ['1', '1'] + [random.choice(['0', '1']) for _ in range(25)]
 			shares = Shamir(1, 3).share_bitstring_secret(vals)
 			pubkeys = ['03e49a88bf6889414e27890ed1f29c615cdfe22aff448b7396ced9c05a29a150d0', '0389c6a273d34941bddd01af256f5a460870fe74064e45dc2ad74c9a15df040090', '02c1cdca9a7491b807fe64a2bcf719086e46f0ecc9ff510a3771b94d9a788e2bd7']
 			enc_shares = []
