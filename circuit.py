@@ -21,12 +21,15 @@ class RuntimeCircuit:
 		indexes = [gate[0] for gate in layer if gate[1]==True]
 		for gate in layer:
 			if not gate[1]:
-				if gate[2][-1] == 'XOR':
-					self.tape[gate[0]] = self.__XOR(self.tape[gate[2][-2]], self.tape[gate[2][-3]])
-				elif gate[2][-1] == 'AND':
-					self.tape[gate[0]] = self.__AND(self.tape[gate[2][-2]], self.tape[gate[2][-3]])
-				else:
-					raise ValueError(f"Improperly formatted gate: {gate}")
+				try:
+					if gate[2][-1] == 'XOR':
+						self.tape[gate[0]] = self.__XOR(self.tape[gate[2][-2]], self.tape[gate[2][-3]])
+					elif gate[2][-1] == 'AND':
+						self.tape[gate[0]] = self.__AND(self.tape[gate[2][-2]], self.tape[gate[2][-3]])
+					else:
+						raise ValueError(f"Improperly formatted gate: {gate}")
+				except Exception as e:
+					print(f'circuit error: {e}, inputs: ({gate[2][-2]}, {gate[2][-3]}) output: {gate[0]}')
 			else:
 				x_shares.append(self.tape[gate[2][-3]])
 				y_shares.append(self.tape[gate[2][-2]])

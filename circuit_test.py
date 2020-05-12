@@ -126,34 +126,10 @@ def test_cleartext_dist32():
 
 def test_cleartext_unnormalized_subregion_10k():
 	start = time.time()
-	c = Circuit("bristol_circuits/unnormalized_subregion_10000_1.txt", ['V' for _ in range(30064)])
+	c = Circuit("bristol_circuits/unnormalized_subregion_100_1.txt", ['V' for _ in range(364)])
 	print(f"circuit load time: {round(time.time()-start, 4)}")
-	answer = 30000
-	inputs = [0 for _ in range(64)] + [1 for _ in range(30000)]
-	start = time.time()
-	out_bits = RuntimeCircuit(c, inputs).evaluate()
-	out_string = ''.join([str(i) for i in list(reversed(out_bits))])
-	assert eval('0b'+out_string) == answer, "computed wrong value"
-	print(f"PASS, time: {round(time.time()-start, 4)}")
-	answer = 5000
-	inputs = [0 for _ in range(64)]
-	for i in range(10000):
-		if i%2==0:
-			inputs.extend([1,0,1])
-		else:
-			inputs.extend([1,0,0])
-	start = time.time()
-	out_bits = RuntimeCircuit(c, inputs).evaluate()
-	out_string = ''.join([str(i) for i in list(reversed(out_bits))])
-	assert eval('0b'+out_string) == answer, "computed wrong value"
-	print(f"PASS, time: {round(time.time()-start, 4)}")
-	answer = 7500
-	inputs = [0 for _ in range(64)]
-	for i in range(10000):
-		if i%4==0:
-			inputs.extend([1,1,1])
-		else:
-			inputs.extend([1,1,0])
+	answer = 300
+	inputs = [0 for _ in range(64)] + [1 for _ in range(300)]
 	start = time.time()
 	out_bits = RuntimeCircuit(c, inputs).evaluate()
 	out_string = ''.join([str(i) for i in list(reversed(out_bits))])
