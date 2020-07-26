@@ -15,7 +15,7 @@ Welcome to Faction's open source Secure Multi Party Computation toolkit. We're b
 
 ## Clone and test
 
-Clone the root repository and enter the mpc directory. 
+Clone the root repository and enter the directory
 
 Before running tests make sure to unzip any zipped files in the `bristol_circuits` directory (some tests will fail if not).
 
